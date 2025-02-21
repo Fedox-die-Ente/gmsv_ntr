@@ -1,0 +1,4 @@
+/target
+*.dll
+*.ps1
+/.idea
