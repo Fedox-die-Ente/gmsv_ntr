@@ -48,6 +48,15 @@ unsafe fn open(l: LuaState) -> i32 {
     lua_pushcfunction(l, unload_file_lua);
     lua_setfield(l, -2, cstr!("UnloadFile"));
 
+    lua_pushcfunction(l, get_value_from_cache_without_file);
+    lua_setfield(l, -2, cstr!("GetValueFromCache"));
+
+    lua_pushcfunction(l, parse_ntr_files_from_directory);
+    lua_setfield(l, -2, cstr!("ParseDirectory"));
+
+    lua_pushcfunction(l, get_cached_files);
+    lua_setfield(l, -2, cstr!("GetCachedFiles"));
+
     lua_setglobal(l, cstr!("NTRParser"));
 
     0
@@ -171,6 +180,86 @@ pub fn unload_file_lua(l: LuaState) -> i32 {
         let error_message = CString::new(format!("File not found in cache: {}", file_path)).unwrap();
         lua_pushstring(l, error_message.as_ptr());
         return 2;
+    }
+
+    1
+}
+
+#[lua_function]
+pub fn get_value_from_cache_without_file(l: LuaState) -> i32 {
+    let key = rstr!(luaL_checkstring(l, 1));
+
+    let parsed_files = PARSED_FILES.lock().unwrap();
+
+    for (_, ntr_data) in parsed_files.iter() {
+        if let Some(value) = ntr_data.get(&key) {
+            let c_value = CString::new(value.clone()).unwrap();
+            lua_pushstring(l, c_value.as_ptr());
+            return 1;
+        }
+    }
+
+    lua_pushnil(l);
+    1
+}
+
+
+#[lua_function]
+pub fn parse_ntr_files_from_directory(l: LuaState) -> i32 {
+    let directory = rstr!(luaL_checkstring(l, 1));
+    let mut files_parsed = 0;
+
+    if let Ok(paths) = std::fs::read_dir(directory) {
+        for path_result in paths {
+            if let Ok(path) = path_result {
+                let path_buf = path.path();
+
+                if path_buf.is_file() {
+                    if let Some(extension) = path_buf.extension() {
+                        if extension == "ntr" {
+                            if let Some(path_str) = path_buf.to_str() {
+                                let c_path = CString::new(path_str).unwrap();
+                                lua_pushstring(l, c_path.as_ptr());
+
+                                if parse_ntr_file(&path_str).is_ok() {
+                                    let mut parsed_files = PARSED_FILES.lock().unwrap();
+                                    parsed_files.insert(path_str.to_string(), parse_ntr_file(&path_str).unwrap());
+                                    files_parsed += 1;
+                                }
+                            }
+                        }
+                    }
+                } else if path_buf.is_dir() {
+                    if let Some(subdir_str) = path_buf.to_str() {
+                        let c_subdir = CString::new(subdir_str).unwrap();
+                        lua_pushstring(l, c_subdir.as_ptr());
+
+                        files_parsed += parse_ntr_files_from_directory(l) as usize;
+                    }
+                }
+            }
+        }
+    } else {
+        lua_pushboolean(l, false as i32);
+        let error_message = CString::new(format!("Could not read directory: {}", directory)).unwrap();
+        lua_pushstring(l, error_message.as_ptr());
+        return 2;
+    }
+
+    lua_pushinteger(l, files_parsed as LuaInteger);
+    1
+}
+
+#[lua_function]
+pub fn get_cached_files(l: LuaState) -> i32 {
+    let parsed_files = PARSED_FILES.lock().unwrap();
+
+    lua_newtable(l);
+    for (i, (file_path, _)) in parsed_files.iter().enumerate() {
+        lua_pushinteger(l, ((i + 1) as i32).try_into().unwrap());
+        let c_file_path = CString::new(file_path.clone()).unwrap();
+        lua_pushstring(l, c_file_path.as_ptr());
+        lua_settable(l, -3);
     }
 
     1
